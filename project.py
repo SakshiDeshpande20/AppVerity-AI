@@ -164,6 +164,124 @@ def safety_recommendations(level: str) -> list[str]:
     ]
 
 
+
+def format_number(value: object) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "Not available"
+
+
+def yes_no(value: object) -> str:
+    return "Yes" if bool(value) else "No"
+
+
+def render_developer_trust_panel(result: dict) -> None:
+    st.subheader("Application and developer information")
+
+    icon_col, identity_col = st.columns([1, 5])
+
+    with icon_col:
+        if result.get("icon"):
+            st.image(result["icon"], width=112)
+        else:
+            st.info("No icon available")
+
+    with identity_col:
+        st.markdown(f"### {result['app_name']}")
+        st.write(f"**Developer:** {result.get('developer') or 'Not available'}")
+        st.caption(f"Package ID: {result['app_id']}")
+
+    info1, info2, info3, info4 = st.columns(4)
+    info1.metric(
+        "Google Play rating",
+        (
+            f"{result['rating']:.1f}/5"
+            if result.get("rating") is not None
+            else "Not available"
+        ),
+    )
+    info2.metric(
+        "Installs",
+        result.get("installs_label") or format_number(result.get("installs")),
+    )
+    info3.metric("Ratings", format_number(result.get("ratings_count")))
+    info4.metric("Store reviews", format_number(result.get("total_review_count")))
+
+    detail1, detail2, detail3, detail4 = st.columns(4)
+    detail1.metric("Category", result.get("genre") or "Not available")
+    detail2.metric(
+        "Content rating",
+        result.get("content_rating") or "Not available",
+    )
+    detail3.metric("Contains ads", yes_no(result.get("contains_ads")))
+    detail4.metric("In-app purchases", yes_no(result.get("offers_iap")))
+
+    date1, date2, date3 = st.columns(3)
+    date1.metric("Released", result.get("released") or "Not available")
+    date2.metric("Last updated", result.get("updated") or "Not available")
+    date3.metric("Version", result.get("version") or "Not available")
+
+    st.markdown("#### Developer transparency assessment")
+    st.progress(
+        result["transparency_score"] / 100,
+        text=(
+            f"{result['transparency_level']}: "
+            f"{result['transparency_score']}/100"
+        ),
+    )
+    st.caption(
+        "This is a metadata-completeness and maturity indicator. "
+        "It does not verify the developer's identity or prove that the app is safe."
+    )
+
+    positive_col, warning_col = st.columns(2)
+
+    with positive_col:
+        st.markdown("##### Positive transparency signals")
+        if result.get("developer_positive_signals"):
+            for signal in result["developer_positive_signals"]:
+                st.markdown(f"- ✅ {signal}")
+        else:
+            st.write("No positive metadata signals were available.")
+
+    with warning_col:
+        st.markdown("##### Items requiring verification")
+        if result.get("developer_warning_signals"):
+            for signal in result["developer_warning_signals"]:
+                st.markdown(f"- ⚠️ {signal}")
+        else:
+            st.write("No metadata warnings were generated.")
+
+    with st.expander("Developer contact and policy links"):
+        st.write(
+            f"**Support email:** "
+            f"{result.get('developer_email') or 'Not available'}"
+        )
+        st.write(
+            f"**Developer address:** "
+            f"{result.get('developer_address') or 'Not available'}"
+        )
+
+        link_col1, link_col2 = st.columns(2)
+        if result.get("developer_website"):
+            link_col1.link_button(
+                "Open developer website",
+                result["developer_website"],
+                use_container_width=True,
+            )
+        else:
+            link_col1.info("Developer website unavailable")
+
+        if result.get("privacy_policy"):
+            link_col2.link_button(
+                "Open privacy policy",
+                result["privacy_policy"],
+                use_container_width=True,
+            )
+        else:
+            link_col2.warning("Privacy policy unavailable")
+
 def build_report(result: dict) -> str:
     reason_lines = "\n".join(
         f"- {reason}" for reason in result.get("risk_reasons", [])
@@ -186,8 +304,24 @@ Generated: {datetime.now().strftime("%d %B %Y, %I:%M %p")}
 Application: {result['app_name']}
 Application ID: {result['app_id']}
 Developer: {result.get('developer') or 'Not available'}
+Developer email: {result.get('developer_email') or 'Not available'}
+Developer website: {result.get('developer_website') or 'Not available'}
+Privacy policy: {result.get('privacy_policy') or 'Not available'}
 Google Play rating: {result.get('rating') if result.get('rating') is not None else 'Not available'}
+Installs: {result.get('installs_label') or result.get('installs') or 'Not available'}
+Ratings: {result.get('ratings_count') or 'Not available'}
+Category: {result.get('genre') or 'Not available'}
+Content rating: {result.get('content_rating') or 'Not available'}
+Released: {result.get('released') or 'Not available'}
+Last updated: {result.get('updated') or 'Not available'}
+Contains ads: {yes_no(result.get('contains_ads'))}
+Offers in-app purchases: {yes_no(result.get('offers_iap'))}
 Reviews analysed: {result['reviews_analyzed']}
+
+DEVELOPER TRANSPARENCY
+----------------------
+Transparency score: {result.get('transparency_score', 0)}/100
+Transparency level: {result.get('transparency_level', 'Not available')}
 
 RISK ASSESSMENT
 ---------------
@@ -313,6 +447,8 @@ with analyze_tab:
                         "negative_percentage",
                         "risk_reasons",
                         "summary",
+                        "transparency_score",
+                        "transparency_level",
                     }
                     missing_fields = required_fields.difference(result)
                     if missing_fields:
@@ -341,6 +477,11 @@ with analyze_tab:
                     """,
                     unsafe_allow_html=True,
                 )
+
+                render_developer_trust_panel(result)
+
+                st.divider()
+                st.subheader("Review-based risk assessment")
 
                 st.progress(
                     result["risk_score"] / 100,
@@ -526,6 +667,18 @@ with about_tab:
         - **Low (0–30):** fewer concerning signals were found in the sample.
         - **Medium (31–60):** some warning signals require manual verification.
         - **High (61–100):** stronger negative and complaint patterns were detected.
+        """
+    )
+
+    st.markdown(
+        """
+        ### Developer transparency panel
+
+        AppVerity also shows public Google Play listing metadata such as the
+        developer contact details, privacy-policy availability, release date,
+        update recency, install count and rating volume. The transparency score
+        measures metadata completeness and app maturity; it is not identity
+        verification.
         """
     )
 
