@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime
 from html import escape
+from io import StringIO
 from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
 
 import fraud_detection
+import history_db
 
 
 st.set_page_config(
@@ -282,6 +285,42 @@ def render_developer_trust_panel(result: dict) -> None:
         else:
             link_col2.warning("Privacy policy unavailable")
 
+
+def format_history_time(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed.strftime("%d %b %Y, %I:%M %p")
+    except (TypeError, ValueError):
+        return value
+
+
+def build_history_csv(records: list[dict]) -> str:
+    output = StringIO(newline="")
+    fieldnames = [
+        "analyzed_at",
+        "app_name",
+        "app_id",
+        "developer",
+        "risk_score",
+        "risk_level",
+        "transparency_score",
+        "positive_percentage",
+        "neutral_percentage",
+        "negative_percentage",
+        "reviews_analyzed",
+        "rating",
+        "summary",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for record in records:
+        writer.writerow(
+            {field: record.get(field) for field in fieldnames}
+        )
+
+    return output.getvalue()
+
 def build_report(result: dict) -> str:
     reason_lines = "\n".join(
         f"- {reason}" for reason in result.get("risk_reasons", [])
@@ -365,8 +404,12 @@ is fraudulent.
 """.strip()
 
 
-if "analysis_history" not in st.session_state:
-    st.session_state.analysis_history = []
+try:
+    history_db.initialize_database()
+except history_db.HistoryDatabaseError as exc:
+    st.error("AppVerity could not initialise its local history database.")
+    st.code(str(exc))
+    st.stop()
 
 
 st.markdown(
@@ -386,7 +429,7 @@ st.markdown(
 
 
 analyze_tab, history_tab, about_tab = st.tabs(
-    ["🔍 Analyse app", "🕘 Analysis history", "ℹ️ How it works"]
+    ["🔍 Analyse app", "🕘 Saved history", "ℹ️ How it works"]
 )
 
 
@@ -590,18 +633,18 @@ with analyze_tab:
                     use_container_width=True,
                 )
 
-                st.session_state.analysis_history.insert(
-                    0,
-                    {
-                        "time": datetime.now().strftime("%d %b %Y, %I:%M %p"),
-                        "app_id": result["app_id"],
-                        "app_name": result["app_name"],
-                        "risk_score": result["risk_score"],
-                        "risk_level": result["risk_level"],
-                        "reviews": result["reviews_analyzed"],
-                        "summary": result["summary"],
-                    },
-                )
+                try:
+                    history_id = history_db.save_analysis(result, report)
+                    st.success(
+                        "Analysis saved permanently in local history "
+                        f"(record #{history_id})."
+                    )
+                except history_db.HistoryDatabaseError as history_error:
+                    st.warning(
+                        "The analysis completed, but it could not be saved "
+                        "to local history."
+                    )
+                    st.code(str(history_error))
 
             except Exception as exc:
                 st.error(
@@ -613,27 +656,206 @@ with analyze_tab:
 
 
 with history_tab:
-    st.subheader("Current-session history")
+    st.subheader("Persistent analysis history")
+    st.caption(
+        "Analyses are saved locally in database/appverity_history.db and "
+        "remain available after Streamlit is restarted."
+    )
 
-    if not st.session_state.analysis_history:
-        st.info("No applications have been analysed during this session yet.")
+    try:
+        stats = history_db.get_history_stats()
+    except history_db.HistoryDatabaseError as exc:
+        st.error("Saved history could not be loaded.")
+        st.code(str(exc))
+        stats = {
+            "total": 0,
+            "unique_apps": 0,
+            "high_risk": 0,
+            "medium_risk": 0,
+            "low_risk": 0,
+        }
+
+    stat1, stat2, stat3, stat4 = st.columns(4)
+    stat1.metric("Saved analyses", stats["total"])
+    stat2.metric("Unique apps", stats["unique_apps"])
+    stat3.metric("High-risk results", stats["high_risk"])
+    stat4.metric("Medium-risk results", stats["medium_risk"])
+
+    search_col, filter_col = st.columns([3, 1])
+    with search_col:
+        history_search = st.text_input(
+            "Search saved analyses",
+            placeholder="Search by app name, package ID or developer",
+            key="history_search",
+        )
+    with filter_col:
+        history_risk_filter = st.selectbox(
+            "Risk level",
+            ["All", "High", "Medium", "Low"],
+            key="history_risk_filter",
+        )
+
+    try:
+        history_records = history_db.list_analyses(
+            search=history_search,
+            risk_level=history_risk_filter,
+        )
+    except history_db.HistoryDatabaseError as exc:
+        st.error("Saved analyses could not be loaded.")
+        st.code(str(exc))
+        history_records = []
+
+    if history_records:
+        st.download_button(
+            "⬇️ Export filtered history as CSV",
+            data=build_history_csv(history_records),
+            file_name="appverity_analysis_history.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    tracked_apps = history_db.list_tracked_apps()
+    if tracked_apps:
+        st.markdown("### Risk changes over time")
+        option_to_app_id = {
+            (
+                f"{item['app_name']} ({item['app_id']}) — "
+                f"{item['analysis_count']} saved"
+            ): item["app_id"]
+            for item in tracked_apps
+        }
+        selected_label = st.selectbox(
+            "Select an application",
+            list(option_to_app_id),
+            key="history_trend_app",
+        )
+        trend_rows = history_db.get_app_trend(
+            option_to_app_id[selected_label]
+        )
+
+        if len(trend_rows) >= 2:
+            chart_rows = [
+                {
+                    "Analysed": datetime.fromisoformat(item["analyzed_at"]),
+                    "Risk score": item["risk_score"],
+                    "Transparency score": item["transparency_score"],
+                    "Negative reviews": item["negative_percentage"],
+                }
+                for item in trend_rows
+            ]
+            st.line_chart(
+                chart_rows,
+                x="Analysed",
+                y=[
+                    "Risk score",
+                    "Transparency score",
+                    "Negative reviews",
+                ],
+            )
+        else:
+            st.info(
+                "Analyse this application again later to compare how its "
+                "risk signals change over time."
+            )
+
+    st.markdown("### Saved records")
+
+    if not history_records:
+        st.info("No saved analyses match the current search and filter.")
     else:
-        if st.button("Clear session history"):
-            st.session_state.analysis_history = []
-            st.rerun()
-
-        for number, item in enumerate(
-            st.session_state.analysis_history,
-            start=1,
-        ):
+        for number, item in enumerate(history_records, start=1):
             with st.expander(
                 f"{number}. {item['app_name']} — "
                 f"{item['risk_level']} ({item['risk_score']}/100)"
             ):
+                detail1, detail2, detail3, detail4 = st.columns(4)
+                detail1.metric("Risk score", f"{item['risk_score']}/100")
+                detail2.metric("Risk level", item["risk_level"])
+                detail3.metric(
+                    "Transparency",
+                    f"{item['transparency_score']}/100",
+                )
+                detail4.metric(
+                    "Reviews analysed",
+                    f"{item['reviews_analyzed']:,}",
+                )
+
                 st.write(f"**Application ID:** {item['app_id']}")
-                st.write(f"**Analysed:** {item['time']}")
-                st.write(f"**Reviews analysed:** {item['reviews']:,}")
+                st.write(
+                    f"**Developer:** "
+                    f"{item.get('developer') or 'Not available'}"
+                )
+                st.write(
+                    f"**Analysed:** "
+                    f"{format_history_time(item['analyzed_at'])}"
+                )
+
+                sentiment1, sentiment2, sentiment3 = st.columns(3)
+                sentiment1.metric(
+                    "Positive",
+                    f"{item['positive_percentage']:.1f}%",
+                )
+                sentiment2.metric(
+                    "Neutral",
+                    f"{item['neutral_percentage']:.1f}%",
+                )
+                sentiment3.metric(
+                    "Negative",
+                    f"{item['negative_percentage']:.1f}%",
+                )
+
                 st.write(item["summary"])
+
+                saved_analysis = history_db.get_analysis(item["id"])
+                if saved_analysis:
+                    saved_result = saved_analysis.get("result", {})
+                    reasons = saved_result.get("risk_reasons", [])
+                    if reasons:
+                        st.markdown("#### Saved risk reasons")
+                        for reason in reasons:
+                            st.markdown(f"- {reason}")
+
+                    st.download_button(
+                        "Download saved report",
+                        data=saved_analysis["report_text"],
+                        file_name=(
+                            f"{item['app_id']}_"
+                            f"history_{item['id']}_report.txt"
+                        ),
+                        mime="text/plain",
+                        key=f"history_report_{item['id']}",
+                    )
+
+                confirm_delete = st.checkbox(
+                    "Confirm deletion of this saved record",
+                    key=f"confirm_history_delete_{item['id']}",
+                )
+                if st.button(
+                    "Delete this record",
+                    key=f"delete_history_{item['id']}",
+                    disabled=not confirm_delete,
+                ):
+                    history_db.delete_analysis(item["id"])
+                    st.success("The saved record was deleted.")
+                    st.rerun()
+
+    with st.expander("History management"):
+        st.warning(
+            "Deleting history removes only your locally saved analysis "
+            "records. It does not change the application or GitHub repository."
+        )
+        confirm_clear = st.checkbox(
+            "I understand that all saved analyses will be permanently deleted.",
+            key="confirm_clear_history",
+        )
+        if st.button(
+            "Delete all saved analyses",
+            disabled=not confirm_clear,
+            key="clear_all_history",
+        ):
+            deleted_count = history_db.clear_history()
+            st.success(f"Deleted {deleted_count} saved analysis record(s).")
+            st.rerun()
 
 
 with about_tab:
@@ -679,6 +901,17 @@ with about_tab:
         update recency, install count and rating volume. The transparency score
         measures metadata completeness and app maturity; it is not identity
         verification.
+        """
+    )
+
+    st.markdown(
+        """
+        ### Persistent local history
+
+        Completed analyses are stored in a local SQLite database. The saved
+        history supports search, risk-level filtering, CSV export, saved-report
+        downloads, record deletion and trend comparison when the same app is
+        analysed more than once.
         """
     )
 

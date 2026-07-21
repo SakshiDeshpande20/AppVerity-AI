@@ -16,3 +16,8 @@ secrets.properties
 .idea/
 .DS_Store
 Thumbs.db
+# Local AppVerity SQLite analysis history
+database/*.db
+database/*.db-*
+database/*.sqlite
+database/*.sqlite3
