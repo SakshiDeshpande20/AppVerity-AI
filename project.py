@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
 
+import apk_permission_analyzer
 import fraud_detection
 import history_db
 
@@ -321,6 +322,256 @@ def build_history_csv(records: list[dict]) -> str:
 
     return output.getvalue()
 
+
+def apk_risk_configuration(level: str) -> tuple[str, str, str]:
+    if level == "Low":
+        return "Lower permission exposure", "result-low", "✅"
+    if level == "Medium":
+        return "Moderate permission exposure", "result-medium", "⚠️"
+    return "High permission exposure", "result-high", "🚨"
+
+
+def render_apk_permission_result(result: dict) -> None:
+    title, card_class, icon = apk_risk_configuration(
+        result["permission_risk_level"]
+    )
+
+    st.markdown(
+        f"""
+        <section class="result-card {card_class}">
+            <h2>{icon} {title}</h2>
+            <p><strong>{escape(str(result['app_name']))}</strong></p>
+            <p class="small-muted">
+                Package: {escape(str(result['package_name']))}
+            </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.progress(
+        result["permission_risk_score"] / 100,
+        text=(
+            f"Permission exposure score: "
+            f"{result['permission_risk_score']}/100"
+        ),
+    )
+    st.caption(
+        "This score measures declared sensitive access, not whether the app is "
+        "malicious. A declared permission may never be granted or used."
+    )
+
+    st.progress(
+        result["purpose_mismatch_score"] / 100,
+        text=(
+            f"Purpose mismatch score: "
+            f"{result['purpose_mismatch_score']}/100"
+        ),
+    )
+    st.caption(
+        f"Compared against the selected purpose: {result['app_purpose']}."
+    )
+
+    overview1, overview2, overview3, overview4 = st.columns(4)
+    overview1.metric(
+        "Exposure level",
+        result["permission_risk_level"],
+    )
+    overview2.metric(
+        "Requested permissions",
+        result["total_permissions"],
+    )
+    overview3.metric(
+        "Target SDK",
+        result["target_sdk"],
+    )
+    overview4.metric(
+        "APK size",
+        f"{result['file_size_mb']:.2f} MB",
+    )
+
+    st.subheader("Quick sensitive-permission check")
+    st.caption(
+        "This directly answers whether the APK declares common sensitive permissions."
+    )
+
+    quick_rows = []
+    permission_lookup = {
+        item["short_name"]: item
+        for item in result["permissions"]
+    }
+    for check in result["quick_permission_check"]:
+        permission_item = permission_lookup.get(check["permission"])
+        quick_rows.append(
+            {
+                "Capability": check["capability"],
+                "Requested": check["requested"],
+                "Necessity": (
+                    permission_item.get("necessity")
+                    if permission_item
+                    else "Not requested"
+                ),
+                "Permission": check["permission"],
+            }
+        )
+
+    st.dataframe(
+        quick_rows,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Permission necessity summary")
+    necessity_columns = st.columns(4)
+    for column, label in zip(
+        necessity_columns,
+        [
+            "Expected",
+            "Possibly justified",
+            "Unusual",
+            "Critical mismatch",
+        ],
+    ):
+        column.metric(
+            label,
+            result["necessity_counts"].get(label, 0),
+        )
+
+    if result["necessity_counts"].get("Critical mismatch", 0):
+        st.error(
+            "One or more powerful permissions do not normally match the selected app purpose."
+        )
+    elif result["necessity_counts"].get("Unusual", 0):
+        st.warning(
+            "Some sensitive permissions are unusual for the selected app purpose and need explanation."
+        )
+    else:
+        st.success(
+            "No critical permission-purpose mismatch was detected by the current rules."
+        )
+
+    st.subheader("APK identity")
+    identity1, identity2, identity3, identity4 = st.columns(4)
+    identity1.metric("Version name", result["version_name"])
+    identity2.metric("Version code", result["version_code"])
+    identity3.metric("Minimum SDK", result["min_sdk"])
+    identity4.metric("Main activity", result["main_activity"])
+
+    with st.expander("File fingerprint and component counts"):
+        st.code(result["sha256"], language=None)
+        st.caption("SHA-256 fingerprint of the exact uploaded APK file.")
+        count1, count2, count3, count4 = st.columns(4)
+        count1.metric("Activities", result["activity_count"])
+        count2.metric("Services", result["service_count"])
+        count3.metric("Receivers", result["receiver_count"])
+        count4.metric("Providers", result["provider_count"])
+
+    st.subheader("Permission summary")
+    severity_columns = st.columns(5)
+    for column, severity in zip(
+        severity_columns,
+        ["Critical", "High", "Medium", "Review", "Common"],
+    ):
+        column.metric(
+            severity,
+            result["severity_counts"].get(severity, 0),
+        )
+
+    if result["combination_warnings"]:
+        st.markdown("#### Permission-combination warnings")
+        for warning in result["combination_warnings"]:
+            st.warning(warning)
+
+    if result["component_special_accesses"]:
+        st.markdown("#### Special component access")
+        st.caption(
+            "These capabilities can be declared on Android components rather "
+            "than as ordinary uses-permission entries."
+        )
+        component_rows = [
+            {
+                "Severity": item["severity"],
+                "Capability": item["title"],
+                "Component type": item["component_type"],
+                "Component": item["component_name"],
+                "Manifest permission": item["permission"],
+            }
+            for item in result["component_special_accesses"]
+        ]
+        st.dataframe(
+            component_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Permissions this APK may request")
+    severity_filter = st.multiselect(
+        "Show severity",
+        ["Critical", "High", "Medium", "Review", "Common"],
+        default=["Critical", "High", "Medium", "Review", "Common"],
+        key="apk_permission_severity_filter",
+    )
+
+    filtered_permissions = [
+        item
+        for item in result["permissions"]
+        if item["severity"] in severity_filter
+    ]
+
+    if not filtered_permissions:
+        st.info("No permissions match the selected severity filters.")
+    else:
+        table_rows = [
+            {
+                "Severity": item["severity"],
+                "Permission": item["short_name"],
+                "Meaning": item["title"],
+                "Necessity": item.get("necessity", "Not assessed"),
+                "Special access": "Yes" if item["special_access"] else "No",
+                "Custom": "Yes" if item["custom_permission"] else "No",
+            }
+            for item in filtered_permissions
+        ]
+        st.dataframe(
+            table_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("#### Plain-language explanations")
+        for item in filtered_permissions:
+            with st.expander(
+                f"{item['severity']} — {item['short_name']}: {item['title']}"
+            ):
+                st.write(
+                    f"**Necessity for {result['app_purpose']}:** "
+                    f"{item.get('necessity', 'Not assessed')}"
+                )
+                st.write(
+                    f"**Why:** {item.get('necessity_reason', 'Not available')}"
+                )
+                st.write(f"**What it allows:** {item['explanation']}")
+                st.write(f"**Possible legitimate use:** {item['legitimate_use']}")
+                st.write(f"**What to verify:** {item['verify']}")
+                st.code(item["full_name"], language=None)
+
+    st.download_button(
+        "⬇️ Download APK permission report",
+        data=result["report_text"],
+        file_name=(
+            f"{result['package_name'].replace('.', '_')}_"
+            "permission_report.txt"
+        ),
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+    st.warning(
+        "AppVerity performed static manifest analysis only. The APK was not "
+        "installed or executed. Requested permissions are not the same as "
+        "permissions the user has actually granted."
+    )
+
 def build_report(result: dict) -> str:
     reason_lines = "\n".join(
         f"- {reason}" for reason in result.get("risk_reasons", [])
@@ -457,8 +708,13 @@ st.markdown(
 )
 
 
-analyze_tab, history_tab, about_tab = st.tabs(
-    ["🔍 Analyse app", "🕘 Saved history", "ℹ️ How it works"]
+analyze_tab, apk_tab, history_tab, about_tab = st.tabs(
+    [
+        "🔍 Analyse app",
+        "📦 APK permissions",
+        "🕘 Saved history",
+        "ℹ️ How it works",
+    ]
 )
 
 
@@ -729,6 +985,93 @@ with analyze_tab:
                     st.code(str(exc))
 
 
+
+with apk_tab:
+    st.subheader("APK Permission Risk Analyzer")
+    st.write(
+        "Upload an Android APK to inspect the permissions and special access "
+        "declared in its manifest. AppVerity does not install or execute the file."
+    )
+
+    uploaded_apk = st.file_uploader(
+        "Upload Android APK",
+        type=["apk"],
+        accept_multiple_files=False,
+        help="Maximum supported size: 200 MB.",
+        key="apk_permission_upload",
+    )
+
+    if uploaded_apk is None:
+        st.info(
+            "Choose an APK file to view package information, permission "
+            "explanations, sensitive-access warnings, and a downloadable report."
+        )
+    else:
+        file_size_mb = uploaded_apk.size / (1024 * 1024)
+        file1, file2 = st.columns(2)
+        file1.metric("Selected file", uploaded_apk.name)
+        file2.metric("File size", f"{file_size_mb:.2f} MB")
+
+        selected_app_purpose = st.selectbox(
+            "What type of application is this?",
+            apk_permission_analyzer.APP_PURPOSES,
+            index=0,
+            help=(
+                "AppVerity compares requested permissions with the expected "
+                "needs of the selected app type."
+            ),
+            key="apk_app_purpose",
+        )
+
+        analyse_apk_clicked = st.button(
+            "Analyse APK permissions",
+            type="primary",
+            use_container_width=True,
+            key="analyse_apk_permissions_button",
+        )
+
+        if analyse_apk_clicked:
+            try:
+                with st.status(
+                    "Reading the APK manifest...",
+                    expanded=True,
+                ) as apk_status:
+                    st.write("✓ Validating APK archive structure")
+                    st.write("✓ Calculating SHA-256 fingerprint")
+                    st.write("✓ Extracting package and Android version details")
+                    st.write("✓ Classifying requested permissions")
+                    st.write("✓ Checking supported special component access")
+
+                    apk_result = apk_permission_analyzer.analyze_apk(
+                        uploaded_apk.getvalue(),
+                        uploaded_apk.name,
+                        selected_app_purpose,
+                    )
+                    st.session_state["apk_permission_result"] = apk_result
+
+                    apk_status.update(
+                        label="APK permission analysis completed",
+                        state="complete",
+                        expanded=False,
+                    )
+            except apk_permission_analyzer.APKAnalysisError as exc:
+                st.session_state.pop("apk_permission_result", None)
+                st.error(str(exc))
+            except Exception as exc:
+                st.session_state.pop("apk_permission_result", None)
+                st.error("The APK could not be analysed.")
+                with st.expander("Technical error"):
+                    st.code(str(exc))
+
+        apk_result = st.session_state.get("apk_permission_result")
+        if (
+            apk_result
+            and apk_result.get("file_name") == uploaded_apk.name
+            and apk_result.get("file_size_bytes") == uploaded_apk.size
+            and apk_result.get("app_purpose") == selected_app_purpose
+        ):
+            render_apk_permission_result(apk_result)
+
 with history_tab:
     st.subheader("Persistent analysis history")
     st.caption(
@@ -978,6 +1321,27 @@ with about_tab:
         update recency, install count and rating volume. The transparency score
         measures metadata completeness and app maturity; it is not identity
         verification.
+        """
+    )
+
+    st.markdown(
+        """
+        ### APK permission analysis
+
+        The APK tab performs static manifest analysis. It extracts the package,
+        version, Android SDK requirements, SHA-256 fingerprint, declared
+        permissions, supported component-level special access, and permission
+        combinations that deserve closer verification. The APK is never
+        installed or executed.
+
+        The permission score measures potential exposure, not maliciousness.
+        The purpose mismatch checker compares declared permissions with a selected
+        app category and labels them Expected, Possibly justified, Unusual, or
+        Critical mismatch. These labels are heuristic and should be reviewed with
+        the app's documented features.
+
+        Actual access depends on Android version, runtime approval, special
+        settings, the app's role, and device policy.
         """
     )
 
