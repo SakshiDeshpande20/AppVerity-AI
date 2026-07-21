@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
@@ -10,15 +11,11 @@ import fraud_detection
 
 st.set_page_config(
     page_title="AppVerity AI",
-    page_icon="ðŸ›¡ï¸",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-
-# -------------------------------------------------------------------
-# Styling
-# -------------------------------------------------------------------
 
 st.markdown(
     """
@@ -54,7 +51,7 @@ st.markdown(
 
         .hero-subtitle {
             margin-top: 0.75rem;
-            max-width: 760px;
+            max-width: 780px;
             color: #cbd5e1;
             font-size: 1.08rem;
             line-height: 1.65;
@@ -77,18 +74,19 @@ st.markdown(
             border: 1px solid rgba(148, 163, 184, 0.18);
             background: rgba(15, 23, 42, 0.75);
             margin-top: 1rem;
+            margin-bottom: 1rem;
         }
 
-        .result-safe {
+        .result-low {
             border-left: 6px solid #22c55e;
         }
 
-        .result-risk {
-            border-left: 6px solid #ef4444;
+        .result-medium {
+            border-left: 6px solid #f59e0b;
         }
 
-        .result-unknown {
-            border-left: 6px solid #f59e0b;
+        .result-high {
+            border-left: 6px solid #ef4444;
         }
 
         .small-muted {
@@ -115,77 +113,121 @@ st.markdown(
 )
 
 
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
 def extract_app_id(play_store_url: str) -> str | None:
-    """Extract the Google Play package ID from a Play Store URL."""
+    """Extract the Google Play package ID from a complete URL."""
     try:
         parsed = urlparse(play_store_url.strip())
-
         if parsed.netloc not in {"play.google.com", "www.play.google.com"}:
             return None
-
         if "/store/apps/details" not in parsed.path:
             return None
 
         app_id = parse_qs(parsed.query).get("id", [None])[0]
-
         if not app_id or "." not in app_id:
             return None
-
         return app_id
     except (TypeError, ValueError):
         return None
 
 
-def canonical_play_store_url(app_id: str) -> str:
-    return f"https://play.google.com/store/apps/details?id={app_id}"
+def risk_configuration(level: str) -> tuple[str, str, str]:
+    normalized = level.lower()
+    if normalized == "low":
+        return "Lower risk signals detected", "result-low", "✅"
+    if normalized == "medium":
+        return "Moderate risk signals detected", "result-medium", "⚠️"
+    return "High-risk signals detected", "result-high", "🚨"
 
 
-def result_configuration(verdict: str) -> tuple[str, str, str]:
-    normalized = verdict.lower()
+def safety_recommendations(level: str) -> list[str]:
+    common = [
+        "Verify the developer's official website and support email.",
+        "Read recent one-star and two-star reviews manually.",
+        "Check whether requested permissions match the app's purpose.",
+        "Never share OTPs, PINs, passwords or payment credentials.",
+    ]
 
-    if "not fraudulent" in normalized:
-        return "Lower risk detected", "result-safe", "âœ…"
+    if level == "High":
+        return [
+            "Avoid payments or sensitive data entry until the app and developer are verified.",
+            "Consider using a trusted alternative application.",
+            *common,
+        ]
+    if level == "Medium":
+        return [
+            "Use additional caution and verify repeated complaints before installation.",
+            *common,
+        ]
+    return [
+        "The sampled reviews show fewer warning signals, but continue normal safety checks.",
+        *common,
+    ]
 
-    if "fraudulent" in normalized:
-        return "High-risk signals detected", "result-risk", "âš ï¸"
 
-    return "Insufficient review history", "result-unknown", "â„¹ï¸"
+def build_report(result: dict) -> str:
+    reason_lines = "\n".join(
+        f"- {reason}" for reason in result.get("risk_reasons", [])
+    ) or "- No specific explanation was produced."
 
+    keyword_lines = "\n".join(
+        f"- {item['keyword']}: {item['mentions']} review mention(s)"
+        for item in result.get("top_keywords", [])
+    ) or "- No predefined warning phrases were detected."
 
-def build_report(
-    app_id: str,
-    verdict: str,
-    summary: str,
-    review_count: int,
-) -> str:
+    recommendations = "\n".join(
+        f"- {item}" for item in safety_recommendations(result["risk_level"])
+    )
+
     return f"""
-APPVERITY AI â€” APPLICATION RISK REPORT
-=====================================
+APPVERITY AI — EXPLAINABLE APP RISK REPORT
+==========================================
 
 Generated: {datetime.now().strftime("%d %B %Y, %I:%M %p")}
-Application ID: {app_id}
-Reviews requested: {review_count}
-System result: {verdict}
+Application: {result['app_name']}
+Application ID: {result['app_id']}
+Developer: {result.get('developer') or 'Not available'}
+Google Play rating: {result.get('rating') if result.get('rating') is not None else 'Not available'}
+Reviews analysed: {result['reviews_analyzed']}
 
-ANALYSIS SUMMARY
-----------------
-{summary}
+RISK ASSESSMENT
+---------------
+Risk score: {result['risk_score']}/100
+Risk level: {result['risk_level']}
+
+SENTIMENT DISTRIBUTION
+----------------------
+Positive: {result['positive_percentage']:.1f}%
+Neutral: {result['neutral_percentage']:.1f}%
+Negative: {result['negative_percentage']:.1f}%
+One-star reviews: {result['one_star_percentage']:.1f}%
+
+RECENT TREND
+------------
+Recent negative reviews: {result['recent_negative_percentage']:.1f}%
+Older negative reviews: {result['older_negative_percentage']:.1f}%
+Difference: {result['trend_change']:+.1f} percentage points
+
+WHY THIS SCORE WAS GIVEN
+------------------------
+{reason_lines}
+
+TOP WARNING PHRASES
+-------------------
+{keyword_lines}
+
+SUMMARY
+-------
+{result['summary']}
+
+RECOMMENDED SAFETY CHECKS
+-------------------------
+{recommendations}
 
 IMPORTANT
 ---------
-This is an automated risk assessment based primarily on app metadata
-and user-review sentiment. It is not definitive proof that an app is
-fraudulent.
-
-Recommended checks:
-1. Verify the developer's official website and email.
-2. Read recent one-star and two-star reviews.
-3. Check requested permissions before installation.
-4. Never share OTPs, passwords, PINs or banking information.
+This automated score is based on public review patterns and Google Play
+metadata. It is a risk indication, not definitive proof that an application
+is fraudulent.
 """.strip()
 
 
@@ -193,19 +235,15 @@ if "analysis_history" not in st.session_state:
     st.session_state.analysis_history = []
 
 
-# -------------------------------------------------------------------
-# Header
-# -------------------------------------------------------------------
-
 st.markdown(
     """
     <section class="hero-card">
-        <span class="badge">AI-assisted mobile application analysis</span>
+        <span class="badge">Explainable mobile application risk analysis</span>
         <h1 class="hero-title">AppVerity AI</h1>
         <p class="hero-subtitle">
-            Analyse Google Play Store reviews and app information to identify
-            suspicious sentiment patterns and potential trust concerns before
-            installing an application.
+            Analyse recent Google Play reviews, understand sentiment patterns,
+            view a transparent risk score, and see the exact signals behind the
+            assessment before installing an application.
         </p>
     </section>
     """,
@@ -214,19 +252,15 @@ st.markdown(
 
 
 analyze_tab, history_tab, about_tab = st.tabs(
-    ["ðŸ” Analyse app", "ðŸ•˜ Analysis history", "â„¹ï¸ How it works"]
+    ["🔍 Analyse app", "🕘 Analysis history", "ℹ️ How it works"]
 )
 
-
-# -------------------------------------------------------------------
-# Analyse tab
-# -------------------------------------------------------------------
 
 with analyze_tab:
     st.subheader("Check a Google Play application")
     st.caption(
-        "Paste the complete Google Play Store link. "
-        "The application will collect reviews and perform sentiment-based analysis."
+        "Paste a complete Google Play Store link. AppVerity AI analyses recent "
+        "English-language reviews from the Indian Google Play listing."
     )
 
     with st.form("analysis_form"):
@@ -239,13 +273,10 @@ with analyze_tab:
         )
 
         review_count = st.select_slider(
-            "Number of reviews to analyse",
-            options=[500, 1000, 2000, 3000, 5000],
-            value=1000,
-            help=(
-                "A higher number may provide more evidence but will take "
-                "longer to process."
-            ),
+            "Maximum reviews to analyse",
+            options=[100, 250, 500, 1000, 2000],
+            value=250,
+            help="Start with 100 or 250 reviews for a faster test.",
         )
 
         submitted = st.form_submit_button(
@@ -258,38 +289,37 @@ with analyze_tab:
 
         if not app_url.strip():
             st.warning("Enter a Google Play Store application link.")
-
         elif app_id is None:
-            st.error(
-                "This does not appear to be a valid Google Play Store "
-                "application URL."
-            )
-
+            st.error("This is not a valid Google Play Store application URL.")
         else:
-            normalized_url = canonical_play_store_url(app_id)
-
             try:
                 with st.status(
-                    "Analysing application reviews...",
+                    "Analysing recent application reviews...",
                     expanded=True,
                 ) as analysis_status:
-                    st.write("âœ“ Validating Google Play Store URL")
-                    st.write("âœ“ Collecting app reviews")
-                    st.write("âœ“ Running sentiment analysis")
-                    st.write("âœ“ Preparing the risk summary")
+                    st.write("✓ Validating the Google Play URL")
+                    st.write("✓ Collecting recent reviews")
+                    st.write("✓ Measuring positive, neutral and negative sentiment")
+                    st.write("✓ Detecting predefined warning phrases")
+                    st.write("✓ Calculating the explainable risk score")
 
-                    result = fraud_detection.predict(
-                        normalized_url,
-                        review_count,
-                    )
+                    result = fraud_detection.predict(app_id, review_count)
 
-                    if not isinstance(result, (list, tuple)) or len(result) < 2:
+                    required_fields = {
+                        "risk_score",
+                        "risk_level",
+                        "positive_percentage",
+                        "neutral_percentage",
+                        "negative_percentage",
+                        "risk_reasons",
+                        "summary",
+                    }
+                    missing_fields = required_fields.difference(result)
+                    if missing_fields:
                         raise ValueError(
-                            "The analysis engine returned an invalid result."
+                            "The analysis engine did not return: "
+                            + ", ".join(sorted(missing_fields))
                         )
-
-                    verdict = str(result[0])
-                    summary = str(result[1])
 
                     analysis_status.update(
                         label="Analysis completed",
@@ -297,51 +327,124 @@ with analyze_tab:
                         expanded=False,
                     )
 
-                display_title, card_class, icon = result_configuration(verdict)
+                title, card_class, icon = risk_configuration(result["risk_level"])
+                safe_app_name = escape(str(result["app_name"]))
+                safe_app_id = escape(str(result["app_id"]))
 
                 st.markdown(
                     f"""
                     <section class="result-card {card_class}">
-                        <h2>{icon} {display_title}</h2>
-                        <p class="small-muted">
-                            Application ID: {app_id}
-                        </p>
+                        <h2>{icon} {title}</h2>
+                        <p><strong>{safe_app_name}</strong></p>
+                        <p class="small-muted">Application ID: {safe_app_id}</p>
                     </section>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                metric_col1, metric_col2, metric_col3 = st.columns(3)
-
-                metric_col1.metric("System verdict", verdict)
-                metric_col2.metric("Reviews requested", f"{review_count:,}")
-                metric_col3.metric("Analysis source", "Google Play")
-
-                st.subheader("Analysis summary")
-                st.info(summary)
-
-                with st.expander("Recommended safety checks", expanded=True):
-                    st.markdown(
-                        """
-                        - Verify the developer's official website and email.
-                        - Read recent one-star and two-star reviews manually.
-                        - Check whether the requested permissions match the app's purpose.
-                        - Avoid apps asking for unnecessary accessibility or SMS access.
-                        - Never share OTPs, PINs, passwords or payment credentials.
-                        """
-                    )
-
-                report = build_report(
-                    app_id=app_id,
-                    verdict=verdict,
-                    summary=summary,
-                    review_count=review_count,
+                st.progress(
+                    result["risk_score"] / 100,
+                    text=f"Explainable risk score: {result['risk_score']}/100",
                 )
 
+                metric1, metric2, metric3, metric4 = st.columns(4)
+                metric1.metric("Risk score", f"{result['risk_score']}/100")
+                metric2.metric("Risk level", result["risk_level"])
+                metric3.metric("Reviews analysed", f"{result['reviews_analyzed']:,}")
+                metric4.metric(
+                    "Google Play rating",
+                    (
+                        f"{result['rating']:.1f}/5"
+                        if result.get("rating") is not None
+                        else "Not available"
+                    ),
+                )
+
+                st.subheader("Review sentiment")
+                positive_col, neutral_col, negative_col = st.columns(3)
+                positive_col.metric(
+                    "Positive",
+                    f"{result['positive_percentage']:.1f}%",
+                )
+                neutral_col.metric(
+                    "Neutral",
+                    f"{result['neutral_percentage']:.1f}%",
+                )
+                negative_col.metric(
+                    "Negative",
+                    f"{result['negative_percentage']:.1f}%",
+                )
+
+                chart_data = {
+                    "Sentiment": ["Positive", "Neutral", "Negative"],
+                    "Percentage": [
+                        result["positive_percentage"],
+                        result["neutral_percentage"],
+                        result["negative_percentage"],
+                    ],
+                }
+                st.bar_chart(chart_data, x="Sentiment", y="Percentage")
+
+                st.subheader("Why did AppVerity give this score?")
+                for reason in result["risk_reasons"]:
+                    st.markdown(f"- {reason}")
+
+                trend_col1, trend_col2, trend_col3 = st.columns(3)
+                trend_col1.metric(
+                    "Recent negative",
+                    f"{result['recent_negative_percentage']:.1f}%",
+                )
+                trend_col2.metric(
+                    "Older negative",
+                    f"{result['older_negative_percentage']:.1f}%",
+                )
+                trend_col3.metric(
+                    "Trend difference",
+                    f"{result['trend_change']:+.1f} pp",
+                    help="Positive means recent reviews were more negative.",
+                )
+
+                st.subheader("Top warning phrases")
+                if result["top_keywords"]:
+                    keyword_table = [
+                        {
+                            "Warning phrase": item["keyword"],
+                            "Review mentions": item["mentions"],
+                        }
+                        for item in result["top_keywords"]
+                    ]
+                    st.dataframe(
+                        keyword_table,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.success(
+                        "No predefined warning phrases were found in the sampled reviews."
+                    )
+
+                with st.expander("Complaint categories"):
+                    if result["complaint_categories"]:
+                        for item in result["complaint_categories"]:
+                            st.write(
+                                f"**{item['category']}:** "
+                                f"{item['mentions']} review mention(s)"
+                            )
+                    else:
+                        st.write("No predefined complaint categories were detected.")
+
+                st.subheader("Analysis summary")
+                st.info(result["summary"])
+
+                with st.expander("Recommended safety checks", expanded=True):
+                    for recommendation in safety_recommendations(result["risk_level"]):
+                        st.markdown(f"- {recommendation}")
+
+                report = build_report(result)
                 st.download_button(
-                    "â¬‡ï¸ Download analysis report",
+                    "⬇️ Download explainable risk report",
                     data=report,
-                    file_name=f"{app_id}_apptrust_report.txt",
+                    file_name=f"{result['app_id']}_appverity_report.txt",
                     mime="text/plain",
                     use_container_width=True,
                 )
@@ -349,37 +452,30 @@ with analyze_tab:
                 st.session_state.analysis_history.insert(
                     0,
                     {
-                        "time": datetime.now().strftime(
-                            "%d %b %Y, %I:%M %p"
-                        ),
-                        "app_id": app_id,
-                        "verdict": verdict,
-                        "reviews": review_count,
-                        "summary": summary,
+                        "time": datetime.now().strftime("%d %b %Y, %I:%M %p"),
+                        "app_id": result["app_id"],
+                        "app_name": result["app_name"],
+                        "risk_score": result["risk_score"],
+                        "risk_level": result["risk_level"],
+                        "reviews": result["reviews_analyzed"],
+                        "summary": result["summary"],
                     },
                 )
 
             except Exception as exc:
                 st.error(
                     "The application could not be analysed. Confirm that the "
-                    "link exists, check your internet connection and try again."
+                    "listing exists, check your internet connection and try again."
                 )
-
                 with st.expander("Technical error"):
                     st.code(str(exc))
 
-
-# -------------------------------------------------------------------
-# History tab
-# -------------------------------------------------------------------
 
 with history_tab:
     st.subheader("Current-session history")
 
     if not st.session_state.analysis_history:
-        st.info(
-            "No applications have been analysed during this session yet."
-        )
+        st.info("No applications have been analysed during this session yet.")
     else:
         if st.button("Clear session history"):
             st.session_state.analysis_history = []
@@ -390,45 +486,51 @@ with history_tab:
             start=1,
         ):
             with st.expander(
-                f"{number}. {item['app_id']} â€” {item['verdict']}"
+                f"{number}. {item['app_name']} — "
+                f"{item['risk_level']} ({item['risk_score']}/100)"
             ):
+                st.write(f"**Application ID:** {item['app_id']}")
                 st.write(f"**Analysed:** {item['time']}")
-                st.write(f"**Reviews requested:** {item['reviews']:,}")
+                st.write(f"**Reviews analysed:** {item['reviews']:,}")
                 st.write(item["summary"])
 
-
-# -------------------------------------------------------------------
-# About tab
-# -------------------------------------------------------------------
 
 with about_tab:
     st.subheader("How AppVerity AI works")
 
-    step1, step2, step3 = st.columns(3)
+    step1, step2, step3, step4 = st.columns(4)
 
     with step1:
         st.markdown("### 1. Collect")
-        st.write(
-            "Retrieves public app information and user reviews from "
-            "Google Play."
-        )
+        st.write("Retrieves recent public reviews and app metadata from Google Play.")
 
     with step2:
         st.markdown("### 2. Analyse")
-        st.write(
-            "Uses natural-language processing and sentiment signals to "
-            "identify concerning patterns."
-        )
+        st.write("Uses VADER NLP sentiment analysis for each review.")
 
     with step3:
-        st.markdown("### 3. Explain")
+        st.markdown("### 3. Score")
         st.write(
-            "Displays the result, review summary and recommended manual "
-            "safety checks."
+            "Combines negative sentiment, one-star reviews, warning phrases, "
+            "rating and recent trend into a score from 0 to 100."
         )
 
+    with step4:
+        st.markdown("### 4. Explain")
+        st.write("Shows the exact factors, warning phrases and trend behind the score.")
+
+    st.markdown(
+        """
+        ### Risk levels
+
+        - **Low (0–30):** fewer concerning signals were found in the sample.
+        - **Medium (31–60):** some warning signals require manual verification.
+        - **High (61–100):** stronger negative and complaint patterns were detected.
+        """
+    )
+
     st.warning(
-        "This tool provides an automated risk indication. Negative reviews "
-        "do not automatically prove fraud, and positive reviews do not "
-        "guarantee that an application is safe."
+        "AppVerity AI provides an automated risk indication. Reviews can be "
+        "incomplete, manipulated, biased or unrelated to fraud. The result does "
+        "not prove that an application is fraudulent or guarantee that it is safe."
     )
