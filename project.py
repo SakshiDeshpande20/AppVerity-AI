@@ -327,13 +327,34 @@ def build_report(result: dict) -> str:
     ) or "- No specific explanation was produced."
 
     keyword_lines = "\n".join(
-        f"- {item['keyword']}: {item['mentions']} review mention(s)"
+        (
+            f"- {item['keyword']} ({item.get('language', 'Unknown')}): "
+            f"{item['mentions']} review mention(s)"
+        )
         for item in result.get("top_keywords", [])
     ) or "- No predefined warning phrases were detected."
 
     recommendations = "\n".join(
         f"- {item}" for item in safety_recommendations(result["risk_level"])
     )
+
+    language_lines = "\n".join(
+        (
+            f"- {item['language']}: {item['reviews']} reviews "
+            f"({item['percentage']:.1f}%)"
+        )
+        for item in result.get("language_distribution", [])
+    ) or "- Language information was unavailable."
+
+    language_sentiment_lines = "\n".join(
+        (
+            f"- {item['language']}: "
+            f"positive {item['positive_percentage']:.1f}%, "
+            f"neutral {item['neutral_percentage']:.1f}%, "
+            f"negative {item['negative_percentage']:.1f}%"
+        )
+        for item in result.get("sentiment_by_language", [])
+    ) or "- Language-specific sentiment was unavailable."
 
     return f"""
 APPVERITY AI — EXPLAINABLE APP RISK REPORT
@@ -373,6 +394,14 @@ Positive: {result['positive_percentage']:.1f}%
 Neutral: {result['neutral_percentage']:.1f}%
 Negative: {result['negative_percentage']:.1f}%
 One-star reviews: {result['one_star_percentage']:.1f}%
+
+LANGUAGE DISTRIBUTION
+---------------------
+{language_lines}
+
+SENTIMENT BY LANGUAGE
+---------------------
+{language_sentiment_lines}
 
 RECENT TREND
 ------------
@@ -437,7 +466,7 @@ with analyze_tab:
     st.subheader("Check a Google Play application")
     st.caption(
         "Paste a complete Google Play Store link. AppVerity AI analyses recent "
-        "English-language reviews from the Indian Google Play listing."
+        "English, Hindi and Hinglish reviews from the Indian Google Play listing."
     )
 
     with st.form("analysis_form"):
@@ -476,7 +505,8 @@ with analyze_tab:
                 ) as analysis_status:
                     st.write("✓ Validating the Google Play URL")
                     st.write("✓ Collecting recent reviews")
-                    st.write("✓ Measuring positive, neutral and negative sentiment")
+                    st.write("✓ Detecting English, Hindi and Hinglish review patterns")
+                    st.write("✓ Measuring multilingual sentiment")
                     st.write("✓ Detecting predefined warning phrases")
                     st.write("✓ Calculating the explainable risk score")
 
@@ -488,6 +518,8 @@ with analyze_tab:
                         "positive_percentage",
                         "neutral_percentage",
                         "negative_percentage",
+                        "language_distribution",
+                        "sentiment_by_language",
                         "risk_reasons",
                         "summary",
                         "transparency_score",
@@ -569,6 +601,47 @@ with analyze_tab:
                 }
                 st.bar_chart(chart_data, x="Sentiment", y="Percentage")
 
+                st.subheader("Language coverage")
+                language_rows = result["language_distribution"]
+
+                language_metric_columns = st.columns(
+                    max(1, len(language_rows))
+                )
+                for column, item in zip(language_metric_columns, language_rows):
+                    column.metric(
+                        item["language"],
+                        f"{item['reviews']} reviews",
+                        f"{item['percentage']:.1f}%",
+                    )
+
+                st.bar_chart(
+                    language_rows,
+                    x="language",
+                    y="reviews",
+                )
+
+                st.markdown("#### Sentiment by language")
+                language_sentiment_table = [
+                    {
+                        "Language": item["language"],
+                        "Reviews": item["reviews"],
+                        "Positive": f"{item['positive_percentage']:.1f}%",
+                        "Neutral": f"{item['neutral_percentage']:.1f}%",
+                        "Negative": f"{item['negative_percentage']:.1f}%",
+                    }
+                    for item in result["sentiment_by_language"]
+                ]
+                st.dataframe(
+                    language_sentiment_table,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(
+                    "Language detection is rule-based. Hindi uses Devanagari "
+                    "script detection; Hinglish uses common transliterated Hindi "
+                    "vocabulary and phrases."
+                )
+
                 st.subheader("Why did AppVerity give this score?")
                 for reason in result["risk_reasons"]:
                     st.markdown(f"- {reason}")
@@ -593,6 +666,7 @@ with analyze_tab:
                     keyword_table = [
                         {
                             "Warning phrase": item["keyword"],
+                            "Language": item.get("language", "Unknown"),
                             "Review mentions": item["mentions"],
                         }
                         for item in result["top_keywords"]
@@ -869,7 +943,10 @@ with about_tab:
 
     with step2:
         st.markdown("### 2. Analyse")
-        st.write("Uses VADER NLP sentiment analysis for each review.")
+        st.write(
+            "Uses VADER for English and transparent Hindi/Hinglish phrase, "
+            "script, rating and translated-sentiment rules."
+        )
 
     with step3:
         st.markdown("### 3. Score")
@@ -901,6 +978,18 @@ with about_tab:
         update recency, install count and rating volume. The transparency score
         measures metadata completeness and app maturity; it is not identity
         verification.
+        """
+    )
+
+    st.markdown(
+        """
+        ### Multilingual and Hinglish analysis
+
+        Reviews are classified as English, Hindi or Hinglish using transparent
+        script and vocabulary rules. Common Hindi and transliterated Hinglish
+        fraud, payment, refund, withdrawal, account and support phrases are
+        included in sentiment and warning analysis. This is a heuristic system,
+        not a general-purpose machine translation model.
         """
     )
 

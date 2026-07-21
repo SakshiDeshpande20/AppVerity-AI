@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -9,6 +10,174 @@ import nltk
 from google_play_scraper import Sort, app, reviews
 from nltk.sentiment import SentimentIntensityAnalyzer
 
+
+LANGUAGE_ORDER = ("English", "Hinglish", "Hindi")
+DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
+LATIN_WORD_PATTERN = re.compile(r"[a-zA-Z']+")
+
+HINGLISH_MARKERS = {
+    "acha",
+    "accha",
+    "achha",
+    "bahut",
+    "bekar",
+    "bekaar",
+    "bakwas",
+    "band",
+    "chalu",
+    "dhokha",
+    "dhoka",
+    "gaya",
+    "gaye",
+    "gayi",
+    "hai",
+    "hain",
+    "ho",
+    "kar",
+    "karo",
+    "kharab",
+    "kat",
+    "kate",
+    "mila",
+    "mile",
+    "mili",
+    "mera",
+    "meri",
+    "nakli",
+    "nahi",
+    "nhi",
+    "paisa",
+    "paise",
+    "raha",
+    "rahe",
+    "rahi",
+    "sahi",
+    "wapas",
+}
+
+HINGLISH_STRONG_PHRASES = (
+    "paise kat gaye",
+    "paisa kat gaya",
+    "paise deduct ho gaye",
+    "refund nahi mila",
+    "refund nhi mila",
+    "paise wapas nahi mile",
+    "withdrawal nahi ho raha",
+    "withdrawal nhi ho raha",
+    "paisa nikal nahi raha",
+    "account block ho gaya",
+    "customer care reply nahi",
+    "reply nahi kar raha",
+    "ye app fake hai",
+    "app fake hai",
+    "bahut acha",
+    "bahut kharab",
+)
+
+POSITIVE_LANGUAGE_MARKERS = (
+    "acha",
+    "accha",
+    "achha",
+    "badhiya",
+    "badiya",
+    "bahut acha",
+    "mast app",
+    "sahi app",
+    "useful hai",
+    "helpful hai",
+    "अच्छा",
+    "अच्छी",
+    "बढ़िया",
+    "बहुत अच्छा",
+    "सही",
+    "उपयोगी",
+    "सुरक्षित",
+    "भरोसेमंद",
+)
+
+NEGATIVE_LANGUAGE_MARKERS = (
+    "bakwas",
+    "bekar",
+    "bekaar",
+    "kharab",
+    "bahut kharab",
+    "dhokha",
+    "dhoka",
+    "nakli",
+    "fraud hai",
+    "scam hai",
+    "nahi mila",
+    "nhi mila",
+    "nahi ho raha",
+    "nhi ho raha",
+    "paise kat",
+    "paisa kat",
+    "paise wapas nahi",
+    "account block",
+    "reply nahi",
+    "बेकार",
+    "खराब",
+    "घटिया",
+    "धोखा",
+    "फर्जी",
+    "ठगी",
+    "स्कैम",
+    "नहीं मिला",
+    "नहीं हो रहा",
+    "पैसे कट",
+    "पैसा कट",
+    "पैसे वापस नहीं",
+    "खाता ब्लॉक",
+    "जवाब नहीं",
+)
+
+SENTIMENT_TRANSLATIONS = {
+    "paise kat gaye": "money deducted bad",
+    "paisa kat gaya": "money deducted bad",
+    "paise deduct ho gaye": "money deducted bad",
+    "refund nahi mila": "refund not received bad",
+    "refund nhi mila": "refund not received bad",
+    "paise wapas nahi mile": "money not returned bad",
+    "withdrawal nahi ho raha": "withdrawal failed bad",
+    "withdrawal nhi ho raha": "withdrawal failed bad",
+    "paisa nikal nahi raha": "cannot withdraw money bad",
+    "account block ho gaya": "account blocked bad",
+    "customer care reply nahi": "customer support not responding bad",
+    "reply nahi kar raha": "not responding bad",
+    "ye app fake hai": "this app is fake scam",
+    "app fake hai": "app is fake scam",
+    "bahut acha": "very good",
+    "bahut badhiya": "very good",
+    "bahut kharab": "very bad",
+    "bakwas": "terrible",
+    "bekar": "bad",
+    "bekaar": "bad",
+    "dhokha": "fraud",
+    "dhoka": "fraud",
+    "nakli": "fake",
+    "अच्छा": "good",
+    "अच्छी": "good",
+    "बढ़िया": "very good",
+    "बहुत अच्छा": "very good",
+    "सही": "good",
+    "उपयोगी": "useful",
+    "सुरक्षित": "safe",
+    "भरोसेमंद": "trustworthy",
+    "बेकार": "terrible",
+    "खराब": "bad",
+    "घटिया": "terrible",
+    "धोखा": "fraud",
+    "फर्जी": "fake",
+    "ठगी": "fraud",
+    "स्कैम": "scam",
+    "रिफंड नहीं मिला": "refund not received bad",
+    "पैसे वापस नहीं मिले": "money not returned bad",
+    "निकासी नहीं हो रही": "withdrawal failed bad",
+    "पैसे कट गए": "money deducted bad",
+    "पैसा कट गया": "money deducted bad",
+    "खाता ब्लॉक हो गया": "account blocked bad",
+    "जवाब नहीं दे रहे": "not responding bad",
+}
 
 RISK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "Fraud and deception": (
@@ -19,6 +188,18 @@ RISK_KEYWORDS: dict[str, tuple[str, ...]] = {
         "cheating",
         "deceptive",
         "phishing",
+        "ye app fake hai",
+        "app fake hai",
+        "fraud hai",
+        "scam hai",
+        "dhokha",
+        "dhoka",
+        "nakli app",
+        "धोखा",
+        "फर्जी",
+        "फर्जी ऐप",
+        "ठगी",
+        "स्कैम",
     ),
     "Payment problems": (
         "money deducted",
@@ -28,6 +209,13 @@ RISK_KEYWORDS: dict[str, tuple[str, ...]] = {
         "unauthorized transaction",
         "unauthorised transaction",
         "upi fraud",
+        "paise kat gaye",
+        "paisa kat gaya",
+        "paise deduct ho gaye",
+        "पैसे कट गए",
+        "पैसा कट गया",
+        "भुगतान विफल",
+        "पैसे चले गए",
     ),
     "Withdrawal problems": (
         "withdrawal failed",
@@ -36,18 +224,33 @@ RISK_KEYWORDS: dict[str, tuple[str, ...]] = {
         "can't withdraw",
         "cash out failed",
         "payout not received",
+        "withdrawal nahi ho raha",
+        "withdrawal nhi ho raha",
+        "paisa nikal nahi raha",
+        "paise nahi nikal rahe",
+        "निकासी नहीं हो रही",
+        "पैसे नहीं निकल रहे",
     ),
     "Refund problems": (
         "refund not received",
         "no refund",
         "not refunded",
         "money back not received",
+        "refund nahi mila",
+        "refund nhi mila",
+        "paise wapas nahi mile",
+        "रिफंड नहीं मिला",
+        "पैसे वापस नहीं मिले",
     ),
     "Account problems": (
         "account blocked",
         "account suspended",
         "account locked",
         "login blocked",
+        "account block ho gaya",
+        "account lock ho gaya",
+        "खाता ब्लॉक हो गया",
+        "अकाउंट ब्लॉक",
     ),
     "Privacy and malware": (
         "data theft",
@@ -56,15 +259,177 @@ RISK_KEYWORDS: dict[str, tuple[str, ...]] = {
         "malware",
         "spyware",
         "steals data",
+        "data chori",
+        "डेटा चोरी",
+        "गोपनीयता समस्या",
     ),
     "Customer support": (
         "customer support not responding",
         "customer care not responding",
         "no response from support",
         "support is useless",
+        "customer care reply nahi",
+        "reply nahi kar raha",
+        "koi response nahi",
+        "कस्टमर केयर जवाब नहीं",
+        "जवाब नहीं दे रहे",
     ),
 }
 
+
+
+
+def _normalise_text(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _detect_language(text: str) -> str:
+    """Use transparent script and vocabulary rules for English/Hindi/Hinglish."""
+    normalised = _normalise_text(text)
+
+    if DEVANAGARI_PATTERN.search(normalised):
+        return "Hindi"
+
+    if any(phrase in normalised for phrase in HINGLISH_STRONG_PHRASES):
+        return "Hinglish"
+
+    tokens = set(LATIN_WORD_PATTERN.findall(normalised))
+    marker_count = len(tokens.intersection(HINGLISH_MARKERS))
+
+    if marker_count >= 2:
+        return "Hinglish"
+
+    if marker_count == 1 and any(
+        marker in normalised
+        for marker in (
+            "bakwas",
+            "bekar",
+            "bekaar",
+            "dhokha",
+            "dhoka",
+            "nakli",
+            "nahi",
+            "nhi",
+            "paise",
+            "paisa",
+        )
+    ):
+        return "Hinglish"
+
+    return "English"
+
+
+def _phrase_language(phrase: str) -> str:
+    return _detect_language(phrase)
+
+
+def _prepare_multilingual_sentiment_text(text: str) -> str:
+    prepared = _normalise_text(text)
+    for phrase, replacement in sorted(
+        SENTIMENT_TRANSLATIONS.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        prepared = prepared.replace(phrase, replacement)
+    return prepared
+
+
+def _classify_multilingual_sentiment(
+    text: str,
+    star_score: int,
+    analyser: SentimentIntensityAnalyzer,
+) -> str:
+    normalised = _normalise_text(text)
+    prepared = _prepare_multilingual_sentiment_text(text)
+    vader_score = analyser.polarity_scores(prepared)["compound"]
+
+    positive_hits = sum(
+        1 for marker in POSITIVE_LANGUAGE_MARKERS if marker in normalised
+    )
+    negative_hits = sum(
+        1 for marker in NEGATIVE_LANGUAGE_MARKERS if marker in normalised
+    )
+
+    manual_score = min(0.9, positive_hits * 0.35) - min(
+        1.0,
+        negative_hits * 0.45,
+    )
+
+    if star_score <= 2:
+        rating_score = -0.55
+    elif star_score >= 4:
+        rating_score = 0.40
+    else:
+        rating_score = 0.0
+
+    combined_score = (
+        vader_score * 0.60
+        + manual_score * 0.30
+        + rating_score * 0.10
+    )
+
+    if negative_hits and combined_score > -0.05:
+        combined_score = -0.20
+    elif positive_hits and not negative_hits and combined_score < 0.05:
+        combined_score = 0.18
+
+    if combined_score >= 0.05:
+        return "positive"
+    if combined_score <= -0.05:
+        return "negative"
+    return "neutral"
+
+
+def _language_distribution(
+    language_counts: Counter[str],
+    total: int,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "language": language,
+            "reviews": int(language_counts.get(language, 0)),
+            "percentage": _percentage(
+                int(language_counts.get(language, 0)),
+                total,
+            ),
+        }
+        for language in LANGUAGE_ORDER
+        if language_counts.get(language, 0)
+    ]
+
+
+def _sentiment_distribution_by_language(
+    sentiment_counts: dict[str, Counter[str]],
+    language_counts: Counter[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    for language in LANGUAGE_ORDER:
+        total = int(language_counts.get(language, 0))
+        if not total:
+            continue
+
+        counts = sentiment_counts.get(language, Counter())
+        rows.append(
+            {
+                "language": language,
+                "reviews": total,
+                "positive_percentage": _percentage(
+                    int(counts.get("positive", 0)),
+                    total,
+                ),
+                "neutral_percentage": _percentage(
+                    int(counts.get("neutral", 0)),
+                    total,
+                ),
+                "negative_percentage": _percentage(
+                    int(counts.get("negative", 0)),
+                    total,
+                ),
+            }
+        )
+
+    return rows
 
 def _extract_app_id(app_reference: str) -> str:
     """Accept either a package ID or a complete Google Play URL."""
@@ -170,18 +535,26 @@ def _build_summary(
     risk_level: str,
     negative_percentage: float,
     top_keywords: list[dict[str, Any]],
+    language_distribution: list[dict[str, Any]],
 ) -> str:
     keyword_text = ""
     if top_keywords:
         phrases = ", ".join(item["keyword"] for item in top_keywords[:3])
         keyword_text = f" The most frequent warning phrases were: {phrases}."
 
+    language_text = ", ".join(
+        f"{item['language']} {item['reviews']}"
+        for item in language_distribution
+    )
+
     return (
-        f"AppVerity AI analysed {total_reviews} recent English-language Google Play "
-        f"reviews for {app_name}. The assessment produced a {risk_level.lower()} "
-        f"risk score of {risk_score}/100, with {negative_percentage:.1f}% negative "
-        f"reviews.{keyword_text} This score is a warning indicator based on public "
-        "review patterns and app metadata; it is not proof of fraud."
+        f"AppVerity AI analysed {total_reviews} recent Google Play reviews for "
+        f"{app_name}. Detected language coverage: {language_text}. The assessment "
+        f"produced a {risk_level.lower()} risk score of {risk_score}/100, with "
+        f"{negative_percentage:.1f}% negative reviews.{keyword_text} English "
+        "sentiment uses VADER, while Hindi and Hinglish use transparent phrase, "
+        "script, rating and translated-sentiment rules. The result is a warning "
+        "indicator, not proof of fraud."
     )
 
 
@@ -381,35 +754,59 @@ def predict(app_reference: str, n: int = 500) -> dict[str, Any]:
         if isinstance(row.get("content"), str) and row["content"].strip()
     ]
     if not usable_reviews:
-        raise ValueError("No usable English-language reviews were returned for this app.")
+        raise ValueError("No usable reviews were returned for this app.")
 
     sia = SentimentIntensityAnalyzer()
+    sia.lexicon.update(
+        {
+            "bakwas": -3.4,
+            "bekar": -2.8,
+            "bekaar": -2.8,
+            "kharab": -2.6,
+            "dhokha": -3.5,
+            "dhoka": -3.5,
+            "nakli": -2.8,
+            "badhiya": 2.8,
+            "badiya": 2.8,
+            "acha": 2.2,
+            "accha": 2.2,
+            "achha": 2.2,
+        }
+    )
+
     sentiment_labels: list[str] = []
     keyword_counts: Counter[str] = Counter()
     category_counts: Counter[str] = Counter()
+    language_counts: Counter[str] = Counter()
+    sentiment_counts_by_language: dict[str, Counter[str]] = {
+        language: Counter() for language in LANGUAGE_ORDER
+    }
     keyword_review_count = 0
     one_star_count = 0
 
     for row in usable_reviews:
         text = row["content"].strip()
-        lower_text = text.lower()
-        compound = sia.polarity_scores(text)["compound"]
+        lower_text = _normalise_text(text)
+        star_score = int(row.get("score") or 0)
+        language = _detect_language(text)
+        sentiment_label = _classify_multilingual_sentiment(
+            text,
+            star_score,
+            sia,
+        )
 
-        if compound >= 0.05:
-            sentiment_labels.append("positive")
-        elif compound <= -0.05:
-            sentiment_labels.append("negative")
-        else:
-            sentiment_labels.append("neutral")
+        language_counts[language] += 1
+        sentiment_counts_by_language[language][sentiment_label] += 1
+        sentiment_labels.append(sentiment_label)
 
-        if int(row.get("score") or 0) == 1:
+        if star_score == 1:
             one_star_count += 1
 
         review_has_keyword = False
         for category, phrases in RISK_KEYWORDS.items():
             category_found = False
             for phrase in phrases:
-                if phrase in lower_text:
+                if _normalise_text(phrase) in lower_text:
                     keyword_counts[phrase] += 1
                     category_found = True
                     review_has_keyword = True
@@ -429,6 +826,15 @@ def predict(app_reference: str, n: int = 500) -> dict[str, Any]:
     negative_percentage = _percentage(negative_count, total)
     keyword_review_percentage = _percentage(keyword_review_count, total)
     one_star_percentage = _percentage(one_star_count, total)
+    language_distribution = _language_distribution(language_counts, total)
+    sentiment_by_language = _sentiment_distribution_by_language(
+        sentiment_counts_by_language,
+        language_counts,
+    )
+    multilingual_review_count = int(
+        language_counts.get("Hindi", 0)
+        + language_counts.get("Hinglish", 0)
+    )
 
     segment_size = max(1, total // 3)
     recent_labels = sentiment_labels[:segment_size]
@@ -469,8 +875,12 @@ def predict(app_reference: str, n: int = 500) -> dict[str, Any]:
     risk_level = _risk_level(risk_score)
 
     top_keywords = [
-        {"keyword": keyword, "mentions": mentions}
-        for keyword, mentions in keyword_counts.most_common(8)
+        {
+            "keyword": keyword,
+            "mentions": mentions,
+            "language": _phrase_language(keyword),
+        }
+        for keyword, mentions in keyword_counts.most_common(10)
     ]
     complaint_categories = [
         {"category": category, "mentions": mentions}
@@ -486,6 +896,23 @@ def predict(app_reference: str, n: int = 500) -> dict[str, Any]:
         category_counts=category_counts,
     )
 
+    multilingual_warning_mentions = sum(
+        mentions
+        for phrase, mentions in keyword_counts.items()
+        if _phrase_language(phrase) in {"Hindi", "Hinglish"}
+    )
+    if multilingual_warning_mentions:
+        risk_reasons.append(
+            f"Detected {multilingual_warning_mentions} Hindi/Hinglish "
+            "warning-phrase mention(s)."
+        )
+    elif multilingual_review_count:
+        risk_reasons.append(
+            f"Analysed {multilingual_review_count} Hindi/Hinglish review(s) "
+            "using multilingual rules."
+        )
+    risk_reasons = risk_reasons[:7]
+
     app_name = str(app_details.get("title") or app_id)
     summary = _build_summary(
         app_name=app_name,
@@ -494,6 +921,7 @@ def predict(app_reference: str, n: int = 500) -> dict[str, Any]:
         risk_level=risk_level,
         negative_percentage=negative_percentage,
         top_keywords=top_keywords,
+        language_distribution=language_distribution,
     )
 
     return {
@@ -532,6 +960,9 @@ def predict(app_reference: str, n: int = 500) -> dict[str, Any]:
         "positive_percentage": positive_percentage,
         "neutral_percentage": neutral_percentage,
         "negative_percentage": negative_percentage,
+        "language_distribution": language_distribution,
+        "sentiment_by_language": sentiment_by_language,
+        "multilingual_review_count": multilingual_review_count,
         "one_star_percentage": one_star_percentage,
         "keyword_review_percentage": keyword_review_percentage,
         "recent_negative_percentage": recent_negative_percentage,
